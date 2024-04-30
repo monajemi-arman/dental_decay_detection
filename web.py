@@ -42,6 +42,7 @@ def upload_file():
                     pixels, _ = nrrd.read(tmp.name)
                     pixels = (pixels - pixels.min()) / (pixels.max() - pixels.min()) * 255
                     pixels = pixels.squeeze().astype(np.uint8)
+                    pixels = np.swapaxes(pixels, 0, 1) # Need to rotate to look right
                     img = Image.fromarray(pixels)
             else:
                 # Convert to JPG if PNG
