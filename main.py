@@ -229,20 +229,6 @@ def custom_collate(batch):
     return images, targets
 
 
-# Dataset Train/Val/Test
-train_data = DentalDataset(train_dir, train_json, augmentation=True)
-val_data = DentalDataset(val_dir, val_json)
-test_data = DentalDataset(test_dir, test_json)
-
-# DataLoader
-train_loader = DataLoader(train_data, collate_fn=custom_collate, shuffle=True,
-                          num_workers=num_workers, batch_size=batch_size)
-val_loader = DataLoader(val_data, collate_fn=custom_collate, shuffle=False,
-                        num_workers=num_workers, batch_size=batch_size)
-test_loader = DataLoader(test_data, collate_fn=custom_collate, shuffle=False,
-                         num_workers=num_workers, batch_size=batch_size)
-
-
 class FasterRCNNLightning(pl.LightningModule):
     def __init__(self, num_classes=num_classes, lr=lr, batch_size=batch_size, base_model=base_model):
         super().__init__()
@@ -370,202 +356,205 @@ def visualize(image, targets=None, preds=None, threshold=None):
         plt.title('Input')
         plt.show()
 
+# Main
+if __name__ == '__main__':
+    # Dataset Train/Val/Test
+    train_data = DentalDataset(train_dir, train_json, augmentation=True)
+    val_data = DentalDataset(val_dir, val_json)
+    test_data = DentalDataset(test_dir, test_json)
 
-model = FasterRCNNLightning().to(device)
+    # DataLoader
+    train_loader = DataLoader(train_data, collate_fn=custom_collate, shuffle=True,
+                              num_workers=num_workers, batch_size=batch_size)
+    val_loader = DataLoader(val_data, collate_fn=custom_collate, shuffle=False,
+                            num_workers=num_workers, batch_size=batch_size)
+    test_loader = DataLoader(test_data, collate_fn=custom_collate, shuffle=False,
+                             num_workers=num_workers, batch_size=batch_size)
 
-# Train the model
-if not args.model and input('Train the model? [y/N]: ').lower() == 'y':
-    # Callbacks
-    callbacks = [early_stopping.EarlyStopping(monitor='val_loss', mode='min', patience=10),
-                 ModelCheckpoint(monitor='val_loss', mode='min', save_top_k=1,
-                                 dirpath=os.path.join(default_root_dir, 'lightning_logs'), filename='{epoch}')]
-    # Trainer
-    trainer = pl.Trainer(max_epochs=200, default_root_dir=default_root_dir,
-                         log_every_n_steps=40, callbacks=callbacks)
-    # Fit
-    trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=val_loader)
-else:
-    if args.model:
-        ckpt_path = args.model
+    model = FasterRCNNLightning().to(device)
+    # Train the model
+    if not args.model and input('Train the model? [y/N]: ').lower() == 'y':
+        # Callbacks
+        callbacks = [early_stopping.EarlyStopping(monitor='val_loss', mode='min', patience=10),
+                     ModelCheckpoint(monitor='val_loss', mode='min', save_top_k=1,
+                                     dirpath=os.path.join(default_root_dir, 'lightning_logs'), filename='{epoch}')]
+        # Trainer
+        trainer = pl.Trainer(max_epochs=200, default_root_dir=default_root_dir,
+                             log_every_n_steps=40, callbacks=callbacks)
+        # Fit
+        trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=val_loader)
     else:
-        ckpt_path = input('Enter path to model checkpoint: ')
-    if os.path.isfile(args.model):
-        model = FasterRCNNLightning.load_from_checkpoint(ckpt_path)
+        if args.model:
+            ckpt_path = args.model
+        else:
+            ckpt_path = input('Enter path to model checkpoint: ')
+        if os.path.isfile(args.model):
+            model = FasterRCNNLightning.load_from_checkpoint(ckpt_path)
+        else:
+            raise Exception('Checkpoint path does not exist!')
+
+    # Test and metrics
+    if not args.skip_test and input('Do test? [y/N]: ').lower() == 'y':
+        trainer = pl.Trainer()
+        trainer.test(model=model, dataloaders=test_loader)
+
+    # On CPU, the following runs slow, so there is an option to show previously calculated metrics from JSON (if exists)
+    if args.generate_metrics_json:
+        prompt_manual_metrics = 'y'
     else:
-        raise Exception('Checkpoint path does not exist!')
-
-# Test and metrics
-if not args.skip_test and input('Do test? [y/N]: ').lower() == 'y':
-    trainer = pl.Trainer()
-    trainer.test(model=model, dataloaders=test_loader)
-
-# On CPU, the following runs slow, so there is an option to show previously calculated metrics from JSON (if exists)
-if args.generate_metrics_json:
-    prompt_manual_metrics = 'y'
-else:
-    prompt_manual_metrics = input('Do manual metrics calculations? (S: show from previous JSON) [y/N/s]: ').lower()
-if prompt_manual_metrics == 'y' or prompt_manual_metrics == 's':
-    # Basic plot data variables
-    labels = [str(label) for label in range(1, num_classes + 1)]  # Class names
-    labels_metrics_all = []  # For each threshold
-    # For TPF/FPR AUC
-    for_auc = {}
-    for label in labels:
-        for_auc[label] = {'tpr': [], 'fpr': []}
-    # Confidence thresholds ('score')
-    thresholds = np.arange(0, 1, step=0.1)
-
-    if prompt_manual_metrics == 'y':
-        # Manual Test metrics
-        # Set model to eval and freeze
-        model.eval()
-        model.freeze()
-        # Predict and Calculate
-        tp, fp, fn = 0, 0, 0
-        outputs_all, targets_all = [], []
-        for images, targets in test_loader:
-            # Predict outputs
-            with torch.no_grad():
-                outputs = model.to(device)(images.to(device))
-            # Pack outputs and targets
-            outputs_all.extend(outputs)
-            targets_all.extend(targets)
-
-        # Calculate metrics for each threshold
-        for threshold in thresholds:
-            # Labels
-            labels_metrics = {'all': {'tn': 0}}
-            for label in labels:
-                # R: Recall, P: Precision, A: Accuracy, S: Specificity
-                labels_metrics[label] = {'tp': 0, 'tn': 0, 'fp': 0, 'fn': 0, 'R': 0, 'P': 0, 'A': 0, 'S': 0}
-
-            for output, target in zip(outputs_all, targets_all):
-                mask = output['scores'] > threshold
-                output['boxes'] = output['boxes'][mask]
-                output['labels'] = output['labels'][mask]
-                output['scores'] = output['scores'][mask]
-                # Match boxes based on IoUs
-                gt_ious = box_iou(target['boxes'].to(device), output['boxes'].to(device))
-                if gt_ious.shape[1] != 0 and gt_ious.shape[0] == len(target['labels']):
-                    best_ious, ious_idx = gt_ious.max(1)
-                    # Count tp, tn, fp, fn based on iou and label
-                    for iou, iou_idx, target_iou_idx in zip(best_ious, ious_idx, range(len(ious_idx))):
-                        label = str(target['labels'][target_iou_idx].numpy())
-                        if iou > iou_threshold:
-                            if output['labels'][iou_idx] == target['labels'][target_iou_idx]:
-                                # True positive
-                                labels_metrics[label]['tp'] += 1
-                                # Other classes, true negative
-                                labels_metrics['all']['tn'] += 1
-                                labels_metrics[label]['tn'] -= 1
-                            else:
-                                # False positive
-                                labels_metrics[label]['fp'] += 1
-                        else:
-                            # Missed
-                            labels_metrics[label]['fn'] += 1
-                elif gt_ious.shape[1] != 0 and gt_ious.shape(0) < len(target['labels']):
-                    raise Exception('IoU result happened to have less returns than target labels length!')
-                else:
-                    # Missed everything
-                    for label in target['labels']:
-                        label = str(label.numpy())
-                        labels_metrics[label]['fn'] += 1
-
-            # Calculate metircs for current threshold for each class
-            for label in labels:
-                labels_metrics[label]['tn'] = labels_metrics['all']['tn'] + labels_metrics[label]['tn']
-                tp, tn, fp, fn = (labels_metrics[label]['tp'], labels_metrics[label]['tn'], labels_metrics[label]['fp'],
-                                  labels_metrics[label]['fn'])
-                # Precision
-                try:
-                    precision = tp / (tp + fp)
-                except ZeroDivisionError:
-                    precision = 0
-                # Recall
-                try:
-                    recall = tp / (tp + fn)
-                except ZeroDivisionError:
-                    recall = 0
-                # Accuracy
-                try:
-                    accuracy = (tp + tn) / (tp + fp + fn + tn)
-                except ZeroDivisionError:
-                    accuracy = 0
-                # Specificity
-                try:
-                    specificity = tn / (tn + fp)
-                except ZeroDivisionError:
-                    specificity = 0
-                # Save all to list
-                labels_metrics[label]['P'] = precision
-                labels_metrics[label]['R'] = recall
-                labels_metrics[label]['A'] = accuracy
-                labels_metrics[label]['S'] = specificity
-                for_auc[label]['tpr'].append(recall)
-                for_auc[label]['fpr'].append(1 - specificity)
-            labels_metrics.pop('all')
-            labels_metrics_all.append([threshold, labels_metrics])
-
-        # Calculate AUC
-        calculated_auc = {}
+        prompt_manual_metrics = input('Do manual metrics calculations? (S: show from previous JSON) [y/N/s]: ').lower()
+    if prompt_manual_metrics == 'y' or prompt_manual_metrics == 's':
+        # Basic plot data variables
+        labels = [str(label) for label in range(1, num_classes + 1)]  # Class names
+        labels_metrics_all = []  # For each threshold
+        # For TPF/FPR AUC
+        for_auc = {}
         for label in labels:
-            try:
-                calculated_auc[label] = sklearn.metrics.auc(for_auc[label]['fpr'], for_auc[label]['tpr'])
-            except ValueError:
-                calculated_auc[label] = None
+            for_auc[label] = {'tpr': [], 'fpr': []}
+        # Confidence thresholds ('score')
+        thresholds = np.arange(0, 1, step=0.1)
 
-        # Calculate overall metrics
-        overall = {'precision': [], 'recall': [], 'accuracy': [], 'specificity': []}
-        for entry in labels_metrics_all:
-            threshold, labels_metrics = entry
-            for metric in labels_metrics.values():
-                # None to zero
-                precision = metric['P'] if metric['P'] else 0
-                recall = metric['R'] if metric['R'] else 0
-                accuracy = metric['A'] if metric['A'] else 0
-                specificity = metric['S'] if metric['S'] else 0
-                # Append
-                overall['precision'].append(precision)
-                overall['recall'].append(recall)
-                overall['accuracy'].append(accuracy)
-                overall['specificity'].append(specificity)
-        for key, value in overall.items():
-            overall[key] = statistics.mean(value)
+        if prompt_manual_metrics == 'y':
+            # Manual Test metrics
+            # Set model to eval and freeze
+            model.eval()
+            model.freeze()
+            # Predict and Calculate
+            tp, fp, fn = 0, 0, 0
+            outputs_all, targets_all = [], []
+            for images, targets in test_loader:
+                # Predict outputs
+                with torch.no_grad():
+                    outputs = model.to(device)(images.to(device))
+                # Pack outputs and targets
+                outputs_all.extend(outputs)
+                targets_all.extend(targets)
 
-        # Save to file for later use in case needed
-        labels_metrics_all.append(['AUC', calculated_auc])
-        labels_metrics_all.append(['Overall', overall])
-        with open(labels_metrics_all_json, 'w') as fh:
-            json.dump(labels_metrics_all, fh)
+            # Calculate metrics for each threshold
+            for threshold in thresholds:
+                # Labels
+                labels_metrics = {'all': {'tn': 0}}
+                for label in labels:
+                    # R: Recall, P: Precision, A: Accuracy, S: Specificity
+                    labels_metrics[label] = {'tp': 0, 'tn': 0, 'fp': 0, 'fn': 0, 'R': 0, 'P': 0, 'A': 0, 'S': 0}
 
-    # Load previous calculated JSON to save time
-    if prompt_manual_metrics == 's':
-        with open(labels_metrics_all_json) as fh:
-            labels_metrics_all = json.load(fh)
+                for output, target in zip(outputs_all, targets_all):
+                    mask = output['scores'] > threshold
+                    output['boxes'] = output['boxes'][mask]
+                    output['labels'] = output['labels'][mask]
+                    output['scores'] = output['scores'][mask]
+                    # Match boxes based on IoUs
+                    gt_ious = box_iou(target['boxes'].to(device), output['boxes'].to(device))
+                    if gt_ious.shape[1] != 0 and gt_ious.shape[0] == len(target['labels']):
+                        best_ious, ious_idx = gt_ious.max(1)
+                        # Count tp, tn, fp, fn based on iou and label
+                        for iou, iou_idx, target_iou_idx in zip(best_ious, ious_idx, range(len(ious_idx))):
+                            label = str(target['labels'][target_iou_idx].numpy())
+                            if iou > iou_threshold:
+                                if output['labels'][iou_idx] == target['labels'][target_iou_idx]:
+                                    # True positive
+                                    labels_metrics[label]['tp'] += 1
+                                    # Other classes, true negative
+                                    labels_metrics['all']['tn'] += 1
+                                    labels_metrics[label]['tn'] -= 1
+                                else:
+                                    # False positive
+                                    labels_metrics[label]['fp'] += 1
+                            else:
+                                # Missed
+                                labels_metrics[label]['fn'] += 1
+                    elif gt_ious.shape[1] != 0 and gt_ious.shape(0) < len(target['labels']):
+                        raise Exception('IoU result happened to have less returns than target labels length!')
+                    else:
+                        # Missed everything
+                        for label in target['labels']:
+                            label = str(label.numpy())
+                            labels_metrics[label]['fn'] += 1
 
-    # Precision Recall plotting
-    precision = {}
-    recall = {}
-    for label in labels:
-        precision[label], recall[label] = [], []
-        for threshold_idx in range(len(thresholds)):
-            precision[label].append(labels_metrics_all[threshold_idx][1][label]['P'])
-            recall[label].append(labels_metrics_all[threshold_idx][1][label]['R'])
-            # Draw plot for label
-        plt.plot(recall[label], precision[label], label=label)
-    plt.xlabel('Recall')
-    plt.ylabel('Precision')
-    plt.title('Precision-Recall Curve')
-    plt.legend()
-    plt.grid(True)
+                # Calculate metircs for current threshold for each class
+                for label in labels:
+                    labels_metrics[label]['tn'] = labels_metrics['all']['tn'] + labels_metrics[label]['tn']
+                    tp, tn, fp, fn = (labels_metrics[label]['tp'], labels_metrics[label]['tn'], labels_metrics[label]['fp'],
+                                      labels_metrics[label]['fn'])
+                    # Precision
+                    try:
+                        precision = tp / (tp + fp)
+                    except ZeroDivisionError:
+                        precision = 0
+                    # Recall
+                    try:
+                        recall = tp / (tp + fn)
+                    except ZeroDivisionError:
+                        recall = 0
+                    # Accuracy
+                    try:
+                        accuracy = (tp + tn) / (tp + fp + fn + tn)
+                    except ZeroDivisionError:
+                        accuracy = 0
+                    # Specificity
+                    try:
+                        specificity = tn / (tn + fp)
+                    except ZeroDivisionError:
+                        specificity = 0
+                    # Save all to list
+                    labels_metrics[label]['P'] = precision
+                    labels_metrics[label]['R'] = recall
+                    labels_metrics[label]['A'] = accuracy
+                    labels_metrics[label]['S'] = specificity
+                    for_auc[label]['tpr'].append(recall)
+                    for_auc[label]['fpr'].append(1 - specificity)
+                labels_metrics.pop('all')
+                labels_metrics_all.append([threshold, labels_metrics])
 
-# DEBUG
-train_data = DentalDataset(train_dir, train_json, augmentation=True)
-train_sample = train_data.get_image_by_id('515')
-val_sample = DentalDataset(val_dir, val_json).get_image_by_id('6')
-test_sample = DentalDataset(test_dir, test_json).get_image_by_id('26')
-model.eval()
-pred_train = model.to('cpu')(train_sample[0].unsqueeze(0))
-pred_val = model.to('cpu')(val_sample[0].unsqueeze(0))
-pred_test = model.to('cpu')(test_sample[0].unsqueeze(0))
+            # Calculate AUC
+            calculated_auc = {}
+            for label in labels:
+                try:
+                    calculated_auc[label] = sklearn.metrics.auc(for_auc[label]['fpr'], for_auc[label]['tpr'])
+                except ValueError:
+                    calculated_auc[label] = None
+
+            # Calculate overall metrics
+            overall = {'precision': [], 'recall': [], 'accuracy': [], 'specificity': []}
+            for entry in labels_metrics_all:
+                threshold, labels_metrics = entry
+                for metric in labels_metrics.values():
+                    # None to zero
+                    precision = metric['P'] if metric['P'] else 0
+                    recall = metric['R'] if metric['R'] else 0
+                    accuracy = metric['A'] if metric['A'] else 0
+                    specificity = metric['S'] if metric['S'] else 0
+                    # Append
+                    overall['precision'].append(precision)
+                    overall['recall'].append(recall)
+                    overall['accuracy'].append(accuracy)
+                    overall['specificity'].append(specificity)
+            for key, value in overall.items():
+                overall[key] = statistics.mean(value)
+
+            # Save to file for later use in case needed
+            labels_metrics_all.append(['AUC', calculated_auc])
+            labels_metrics_all.append(['Overall', overall])
+            with open(labels_metrics_all_json, 'w') as fh:
+                json.dump(labels_metrics_all, fh)
+
+        # Load previous calculated JSON to save time
+        if prompt_manual_metrics == 's':
+            with open(labels_metrics_all_json) as fh:
+                labels_metrics_all = json.load(fh)
+
+        # Precision Recall plotting
+        precision = {}
+        recall = {}
+        for label in labels:
+            precision[label], recall[label] = [], []
+            for threshold_idx in range(len(thresholds)):
+                precision[label].append(labels_metrics_all[threshold_idx][1][label]['P'])
+                recall[label].append(labels_metrics_all[threshold_idx][1][label]['R'])
+                # Draw plot for label
+            plt.plot(recall[label], precision[label], label=label)
+        plt.xlabel('Recall')
+        plt.ylabel('Precision')
+        plt.title('Precision-Recall Curve')
+        plt.legend()
+        plt.grid(True)
