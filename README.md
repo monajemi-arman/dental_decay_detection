@@ -18,11 +18,22 @@ This project trains a Faster R-CNN model to detect dental decay from bitewing im
 * convert_data_to_coco.py  
   * Converts out custom data from .nrrd (3dslicer output) to coco style JPEG and JSON.
 
-# Usage
+## Usage
+### Web GUI
 1. Clone this repository
-2. Prepare a JSON and a directory for each of train, val, test. The directory contains images, and each JSON has COCO style annotation data of the images.
-3. Use the main.py to train a model on your data. Checkpoint of the model will be saved in lightning_logs directory.
-4. **To Be Implemented** Use infer.py after creating the model checkpoint for inference.
+2. Run web.py
+```bash
+cd dental_decay_detection
+wget 'https://bitewing.monajemi.ir/3.ckpt' # Trained model checkpoint
+python web.py
+```
+3. Go to http://127.0.0.1:33517
+4. You can use the sample.jpg in images directory for testing, otherwise upload your image to see the prediction.
+* The web interface **supports NRRD, JPG, and PNG** file formats.
+### Training
+1. Prepare a JSON and a directory for each of train, val, test. The directory contains images, and each JSON has COCO style annotation data of the images.
+2. Use the main.py to train a model on your data. Checkpoint of the model will be saved in lightning_logs directory.
+3. In the end, infer.py can be used for inference using the trained model checkpoint.
 ---
 # Demo
 ![](images/demo.jpg)
