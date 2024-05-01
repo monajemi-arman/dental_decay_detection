@@ -29,7 +29,7 @@ def transform(image, mean=mean, std=std):
     return transform_compose(image)
 
 
-def visualize(image, preds, threshold=threshold):
+def visualize(image, preds, threshold):
     image = torch.as_tensor(image, dtype=torch.uint8)
     if image.ndim < 3:
         image = image.unsqueeze(0)
@@ -42,8 +42,8 @@ def visualize(image, preds, threshold=threshold):
     return transforms.ToPILImage()(preds_to_show)
 
 
-def infer(image, ckpt_path=ckpt_path, image_target_dims=image_target_dims):
-    pil_image = Image.fromarray(image)
+def infer(image, ckpt_path=ckpt_path, threshold=threshold, image_target_dims=image_target_dims):
+    pil_image = Image.fromarray(image).convert('L')
     pil_image = pil_image.resize(image_target_dims)
     image = np.array(pil_image)
     # Prepare model input by transforming the image
@@ -55,7 +55,7 @@ def infer(image, ckpt_path=ckpt_path, image_target_dims=image_target_dims):
     model.eval()  # Turn off training mode
     # Infer
     preds = model(model_input)[0]
-    image_with_overlay = visualize(image, preds)
+    image_with_overlay = visualize(image, preds, threshold)
     image_array = np.array(image_with_overlay)
 
     return image_array
