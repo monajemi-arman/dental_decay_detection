@@ -42,7 +42,7 @@ def upload_file():
                     pixels, _ = nrrd.read(tmp.name)
                     pixels = (pixels - pixels.min()) / (pixels.max() - pixels.min()) * 255
                     pixels = pixels.squeeze().astype(np.uint8)
-                    pixels = np.swapaxes(pixels, 0, 1) # Need to rotate to look right
+                    pixels = np.swapaxes(pixels, 0, 1)  # Need to rotate to look right
                     img = Image.fromarray(pixels)
             else:
                 # Convert to JPG if PNG
@@ -68,6 +68,11 @@ def upload_file():
                                    image_data_orig=image_data_orig, image_data=image_data)
 
     return render_template('index.html')
+
+
+@app.route('/' + ckpt_path, methods=['GET'])
+def download():
+    return send_from_directory(current_app.root_path, filename)
 
 
 if __name__ == '__main__':

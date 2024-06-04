@@ -24,7 +24,6 @@ This project trains a Faster R-CNN model to detect dental decay from bitewing im
 2. Run web.py
 ```bash
 cd dental_decay_detection
-wget 'https://bitewing.monajemi.ir/3.ckpt' # Trained model checkpoint
 python web.py
 ```
 3. Go to http://127.0.0.1:33517
