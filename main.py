@@ -17,6 +17,7 @@ import lightning as pl
 import numpy as np
 import sklearn.metrics
 import torch
+import torchvision
 from lightning.pytorch.callbacks import early_stopping, ModelCheckpoint
 from matplotlib import pyplot as plt
 from torch import optim, tensor
@@ -32,22 +33,25 @@ from torchvision.utils import draw_bounding_boxes
 from pathlib import Path
 import argparse
 
+# Todo (Not implemented yet)
+# [] Std calculation for dataset
+
 # Input Parameters (CHANGE)
 train_dir, train_json = 'train', 'train.json'
 val_dir, val_json = 'val', 'val.json'
 test_dir, test_json = 'test', 'test.json'
-num_classes: int = 3  # Output classes of objects to be predicted; Either 3 or 6
+num_classes: int = 1  # Output classes of objects to be predicted; Either 3 or 6
 base_model = 'resnet'
 # Other
 labels_metrics_all_json = 'labels_metrics_all.json'
 
 # Model Parameters
-possible_num_classes = (3, 6)
+possible_num_classes = (1, 3, 6)
 iou_threshold = 0.3
 mean, std = [0.485], [0.229]
 image_target_dims = [512, 512]  # Square is better!
 scheduled_lr = False
-batch_size = 1  # 7 for resnet, 1 for resnet2
+batch_size = 6  # 7 for resnet, 1 for resnet2
 lr = 1e-5
 num_workers = multiprocessing.cpu_count()
 
@@ -58,25 +62,26 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 # - Have to turn off GPU to run manual metrics calculations section
 torch.set_float32_matmul_precision('medium')
 
-# Command line arguments (if present)
-parser = argparse.ArgumentParser("Dental decay detection using Faster R-CNN")
-parser.add_argument('-c', '--classes', type=int, help="Number of classes (3 or 6)")
-parser.add_argument('-b', '--base', help="Base of model, either set to resnet or resnet2")
-parser.add_argument('-m', '--model', help="Path to model checkpoint")
-parser.add_argument('--skip-test', action='store_true', help="Skip test step and its calculations")
-parser.add_argument('--generate-metrics-json', action='store_true',
-                    help="Calculate metrics and save results in JSON")
-args = parser.parse_args()
-if args.classes and args.classes in possible_num_classes:
-    num_classes = args.classes
-if args.base:
-    if args.base == 'resnet':
-        base_model = args.base
-    elif args.base == 'resnet2':
-        base_model = args.base
-    else:
-        raise Exception('Bad base model set. Check -b option.')
-# args.model is used later on, skipping user input for this parameter if passed as a cmd arg
+if __name__ == '__main__':
+    # Command line arguments (if present)
+    parser = argparse.ArgumentParser("Dental decay detection using Faster R-CNN")
+    parser.add_argument('-c', '--classes', type=int, help="Number of classes (3 or 6)")
+    parser.add_argument('-b', '--base', help="Base of model, either set to resnet or resnet2")
+    parser.add_argument('-m', '--model', help="Path to model checkpoint")
+    parser.add_argument('--skip-test', action='store_true', help="Skip test step and its calculations")
+    parser.add_argument('--generate-metrics-json', action='store_true',
+                        help="Calculate metrics and save results in JSON")
+    args = parser.parse_args()
+    if args.classes and args.classes in possible_num_classes:
+        num_classes = args.classes
+    if args.base:
+        if args.base == 'resnet':
+            base_model = args.base
+        elif args.base == 'resnet2':
+            base_model = args.base
+        else:
+            raise Exception('Bad base model set. Check -b option.')
+    # args.model is used later on, skipping user input for this parameter if passed as a cmd arg
 
 # Parameter Modification
 # Change metrics JSON name based on model and num of classes
@@ -93,7 +98,7 @@ class DentalDataset(Dataset):
         # Annotation json contains several entries for each image (one for every box),
         # we make it so each image has one entry containing all boxes.
         image_annotations = OrderedDict()
-        for annotation in annotations['annotation']:
+        for annotation in annotations['annotations']:
             image_id = annotation.pop('image_id')
 
             if image_id not in image_annotations:
@@ -133,8 +138,15 @@ class DentalDataset(Dataset):
         # Preprocessing
         image, target = self.transform(image, target)
 
-        # Classes: 3 or 6; For better performance, sometimes need to choose 3 class, merging
-        if self.num_classes == 3:
+        # Classes: 1, 3 or 6; For better performance, sometimes need to choose 3 class, merging
+        if self.num_classes == 1:
+            new_labels = []
+            for label in target['labels']:
+                label = 1
+                new_labels.append(label)
+            target['labels'] = torch.tensor(new_labels, dtype=torch.int64)
+
+        elif self.num_classes == 3:
             new_labels = []
             for label in target['labels']:
                 if label <= 3:
@@ -144,7 +156,7 @@ class DentalDataset(Dataset):
                 elif label > 4:
                     label = 3
                 new_labels.append(label)
-            target['labels'] = torch.tensor(new_labels)
+            target['labels'] = torch.tensor(new_labels, dtype=torch.int64)
 
         return image, target
 
@@ -170,30 +182,41 @@ class DentalDataset(Dataset):
 
         return image, target
 
+    def custom_normalize(self, x, mean, std):
+        # Skip if boxes/labels are passed
+        if isinstance(x, torchvision.tv_tensors._image.Image):
+            x_norm = (x - x.min()) / (x.max() - x.min())
+            # Disabled until mean and std are calculated for the dataset
+            # return (x_norm - mean[0]) / std[0]
+            return x_norm
+        else:
+            return x
+
     def transform(self, image, target):
         # Augmentation
         if self.augmentation:
             # normalize commented out, unnecessary as these models do it internally
             transform_compose = transforms.Compose([
-                # transforms.RandomRotation(degrees=5),
-                # transforms.RandomAdjustSharpness(sharpness_factor=2),
-                transforms.ColorJitter(brightness=0.1, contrast=0.1),
+                transforms.RandomRotation(degrees=5),
+                transforms.RandomAdjustSharpness(sharpness_factor=2),
+                transforms.ColorJitter(brightness=0.2, contrast=0.2),
                 transforms.RandomHorizontalFlip(),
                 transforms.RandomVerticalFlip(),
-                # transforms.GaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0)),
+                transforms.GaussianBlur(kernel_size=(3, 3), sigma=(0.1, 2.0)),
                 transforms.RandomResizedCrop(size=image_target_dims, scale=(0.8, 1.0), antialias=True),
                 transforms.RandomAffine(degrees=0, translate=(0.05, 0.05)),
                 transforms.Resize(image_target_dims, antialias=True),
                 transforms.ToImage(),
                 transforms.ToDtype(torch.float32),
-                transforms.Normalize(mean=mean, std=std)
+                # Manually normalizing and standardizing
+                transforms.Lambda(lambda x: self.custom_normalize(x, mean, std))
             ])
         else:
             transform_compose = transforms.Compose([
                 transforms.Resize(image_target_dims, antialias=True),
                 transforms.ToImage(),
                 transforms.ToDtype(torch.float32),
-                transforms.Normalize(mean=mean, std=std)
+                transforms.Lambda(lambda x: self.custom_normalize(x, mean, std))
             ])
 
         canvas_size = image.shape
@@ -289,7 +312,8 @@ class FasterRCNNLightning(pl.LightningModule):
 
 
 def visualize(image, targets=None, preds=None, threshold=None):
-    image = image * std[0] + mean[0]  # Un-normalize
+    # image = image * std[0] + mean[0]  # De-standardize
+    image *= 255 # De-normalize
     image = torch.as_tensor(image, dtype=torch.uint8)
     if image.ndim < 3:
         image = image.unsqueeze(0)
@@ -388,7 +412,7 @@ if __name__ == '__main__':
             ckpt_path = args.model
         else:
             ckpt_path = input('Enter path to model checkpoint: ')
-        if os.path.isfile(args.model):
+        if os.path.isfile(ckpt_path):
             model = FasterRCNNLightning.load_from_checkpoint(ckpt_path)
         else:
             raise Exception('Checkpoint path does not exist!')

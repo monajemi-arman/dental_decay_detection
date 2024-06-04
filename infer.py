@@ -4,6 +4,7 @@ import argparse
 import numpy as np
 from pathlib import Path
 from torchvision.utils import draw_bounding_boxes
+import torchvision
 from main import FasterRCNNLightning
 from PIL import Image
 
@@ -14,9 +15,21 @@ import torch
 ckpt_path = '3.ckpt'
 image_target_dims = [512, 512]
 mean, std = [0.485], [0.229]
-threshold = 0.80
+threshold = 0.7
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+
+def custom_normalize(x, mean, std):
+    # Skip if boxes/labels are passed
+    if isinstance(x, torchvision.tv_tensors._image.Image):
+        x_norm = (x - x.min()) / (x.max() - x.min())
+        # Disabled until mean and std are calculated for the dataset
+        # (Temporarily disabled) NOT_IMPLEMENTED
+        # return (x_norm - mean[0]) / std[0]
+        return x_norm
+    else:
+        return x
 
 
 def transform(image, mean=mean, std=std):
@@ -24,7 +37,7 @@ def transform(image, mean=mean, std=std):
         transforms.Resize(image_target_dims, antialias=True),
         transforms.ToImage(),
         transforms.ToDtype(torch.float32),
-        transforms.Normalize(mean=mean, std=std)
+        transforms.Lambda(lambda x: custom_normalize(x, mean, std))
     ])
     return transform_compose(image)
 
@@ -63,12 +76,12 @@ def infer(image, ckpt_path=ckpt_path, threshold=threshold, image_target_dims=ima
 
 if __name__ == '__main__':
     # Input arguments
-    parser = argparse.ArgumentParser("Inference using saved ONNX model")
-    parser.add_argument('-m', '--model', required=True, help="Path to .onnx of model")
+    parser = argparse.ArgumentParser("Inference using model checkpoint")
+    parser.add_argument('-m', '--model', required=True, help="Path to checkpoint of model")
     parser.add_argument('-i', '--image', required=True, help="Path to input image")
     parser.add_argument('-o', '--output', help="Output image path")
     args = parser.parse_args()
-    onnx_file = args.model
+    ckpt_path = args.model
     image_path = args.image
     if args.output:
         output_path = args.output
@@ -79,5 +92,5 @@ if __name__ == '__main__':
         image_path, output_path = str(image_path), str(output_path)
     # Infer
     image = imageio.imread(image_path)
-    output_image = infer(image, onnx_file)
+    output_image = infer(image, ckpt_path)
     imageio.imwrite(output_path, output_image)
