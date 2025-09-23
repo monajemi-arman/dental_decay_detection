@@ -34,5 +34,9 @@ python web.py
 2. Use the main.py to train a model on your data. Checkpoint of the model will be saved in lightning_logs directory.
 3. In the end, infer.py can be used for inference using the trained model checkpoint.
 ---
+# Results
+Currently trained on 847 images (697 train, 75 val, 75 test), the resulting mAP value on test dataset is 0.8251.
+# Bugs
+Precision, recall, accuracy, specificity calculation code is corrupt I think. Results are unusual. Fixing in the future...
 # Demo
 ![](images/demo.jpg)
